@@ -124,14 +124,17 @@ export interface SystemGroup {
  */
 export interface HookGroup {
   id: string;
-  message: ParsedMessage;
   timestamp: Date;
   /** Full hook identifier, e.g. "PostToolUse:Write" */
   hookName: string;
   /** Hook lifecycle event, e.g. "PostToolUse" */
   hookEvent: string;
-  /** Whether the hook ran to completion or was cancelled (e.g. superseded, interrupted) */
-  status: 'success' | 'cancelled';
+  /**
+   * Whether the hook ran to completion, was cancelled (e.g. superseded,
+   * interrupted), or blocked the turn from continuing (exit code 2 on
+   * UserPromptSubmit or an equivalent blocking event).
+   */
+  status: 'success' | 'cancelled' | 'blocked';
   /** Shell command that was executed */
   command?: string;
   stdout?: string;
@@ -287,7 +290,8 @@ export type AIGroupDisplayItem =
       timestamp: Date;
       tokenDelta?: CompactionTokenDelta;
       phaseNumber: number;
-    };
+    }
+  | { type: 'hook'; hook: HookGroup };
 
 /**
  * The last output in an AI Group - what user sees as "the answer".
@@ -324,6 +328,13 @@ export interface EnhancedAIGroup extends AIGroup {
   lastOutput: AIGroupLastOutput | null;
   /** Flattened display items in chronological order */
   displayItems: AIGroupDisplayItem[];
+  /**
+   * Hooks that fired chronologically after lastOutput (e.g. a UserPromptSubmit hook
+   * blocking the *next* turn from starting). Excluded from displayItems and rendered
+   * after LastOutputDisplay instead, since LastOutputDisplay is always pinned to the
+   * bottom regardless of timestamp.
+   */
+  trailingHookItems: HookGroup[];
   /** Map of tool call IDs to linked tool items */
   linkedTools: Map<string, LinkedToolItem>;
   /** Human-readable summary of items (e.g., "2 thinking, 4 tool calls, 3 subagents") */
