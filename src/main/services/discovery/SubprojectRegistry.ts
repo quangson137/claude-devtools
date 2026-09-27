@@ -41,7 +41,8 @@ function sanitizeSegment(segment: string): string {
     .trim()
     .replace(/[^a-zA-Z0-9_.-]+/g, '-')
     .replace(/-{2,}/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-/, '')
+    .replace(/-$/, '');
 }
 
 class SubprojectRegistryImpl {

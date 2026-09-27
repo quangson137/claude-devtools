@@ -112,7 +112,8 @@ function mergeChainedHookAttachments(messages: ParsedMessage[]): ParsedMessage[]
     if (
       attachment &&
       anchorAttachment &&
-      msg.parentUuid === prevMessage?.uuid &&
+      prevMessage !== null &&
+      msg.parentUuid === prevMessage.uuid &&
       attachment.hookName === anchorAttachment.hookName &&
       attachment.hookEvent === anchorAttachment.hookEvent
     ) {
