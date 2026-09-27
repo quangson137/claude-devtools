@@ -183,9 +183,15 @@ export interface AssistantEntry extends ConversationalEntry {
 
 export interface SystemEntry extends ConversationalEntry {
   type: 'system';
-  subtype: 'turn_duration' | 'init';
-  durationMs: number;
+  subtype: 'turn_duration' | 'init' | 'informational';
+  durationMs?: number;
   isMeta: boolean;
+  /** Free-text body, present on 'informational' (e.g. a hook blocking prompt submission) */
+  content?: string;
+  /** Severity as classified by the CLI, present on 'informational' */
+  level?: 'info' | 'warning' | 'error';
+  /** True when this entry stopped the turn from continuing (e.g. UserPromptSubmit hook exit 2) */
+  preventContinuation?: boolean;
 }
 
 export interface SummaryEntry extends BaseEntry {
@@ -213,15 +219,18 @@ export interface QueueOperationEntry extends BaseEntry {
 /**
  * Hook lifecycle events emitted by the Claude Code CLI (not the LLM itself).
  *
- * A single hook invocation typically produces up to 3 attachment lines sharing
- * the same toolUseID:
- * - hook_success: the raw execution result (command, stdout, stderr, exitCode)
- * - hook_system_message: systemMessage extracted from the hook's stdout JSON (derived, redundant)
- * - hook_additional_context: hookSpecificOutput.additionalContext from stdout JSON (derived, redundant)
+ * A single hook firing produces 1-3 attachment lines chained via parentUuid (each line's
+ * parentUuid is the previous line's uuid): a hook_success/hook_cancelled line, optionally
+ * followed by a derived hook_system_message and/or hook_additional_context line. Some
+ * hooks (e.g. UserPromptExpansion, bare SessionStart/SubagentStart without a suffix) only
+ * ever emit the hook_system_message/hook_additional_context lines, with no
+ * hook_success/hook_cancelled line at all.
  *
- * hook_system_message/hook_additional_context carry no information beyond what's
- * already in hook_success.stdout, so only hook_success/hook_cancelled are surfaced
- * as ParsedMessages (see parseChatHistoryEntry).
+ * `mergeChainedHookAttachments` (see main/utils/jsonl.ts) collapses each such parentUuid
+ * chain into a single ParsedMessage before it reaches the rest of the app, so exactly one
+ * UI marker is rendered per hook firing regardless of how many lines it produced. The
+ * `mergedSystemMessage`/`mergedAdditionalContext` fields below carry content absorbed from
+ * a later line in the chain onto the first (kept) line.
  */
 export interface HookSuccessAttachment {
   type: 'hook_success';
@@ -234,6 +243,8 @@ export interface HookSuccessAttachment {
   exitCode: number;
   command: string;
   durationMs: number;
+  mergedSystemMessage?: string;
+  mergedAdditionalContext?: string[];
 }
 
 export interface HookCancelledAttachment {
@@ -241,6 +252,14 @@ export interface HookCancelledAttachment {
   hookName: string;
   hookEvent: string;
   toolUseID?: string;
+  /** Shell command that was in flight when the hook was cancelled, if known */
+  command?: string;
+  /** How long the hook ran before being cancelled, in milliseconds */
+  durationMs?: number;
+  timedOut?: boolean;
+  timeoutMs?: number;
+  mergedSystemMessage?: string;
+  mergedAdditionalContext?: string[];
 }
 
 export interface HookSystemMessageAttachment {
@@ -249,6 +268,8 @@ export interface HookSystemMessageAttachment {
   hookName: string;
   hookEvent: string;
   toolUseID?: string;
+  mergedSystemMessage?: string;
+  mergedAdditionalContext?: string[];
 }
 
 export interface HookAdditionalContextAttachment {
@@ -257,12 +278,35 @@ export interface HookAdditionalContextAttachment {
   hookName: string;
   hookEvent: string;
   toolUseID?: string;
+  mergedSystemMessage?: string;
+  mergedAdditionalContext?: string[];
+}
+
+/**
+ * Synthesized from a `type: "system", subtype: "informational"` entry — the CLI's
+ * own record that a hook's exit code 2 (or equivalent) stopped a turn from
+ * continuing, as opposed to the `hook_*` attachment lines which record a hook
+ * that ran without blocking anything.
+ */
+export interface HookBlockedPromptAttachment {
+  type: 'hook_blocked_prompt';
+  content: string;
+  hookName: string;
+  hookEvent: string;
+  level?: 'info' | 'warning' | 'error';
+  preventContinuation: boolean;
+  // Never populated in practice: mergeChainedHookAttachments (main/utils/jsonl.ts)
+  // only chains type: 'attachment' entries, and this variant is synthesized from a
+  // type: 'system' entry. Declared for structural compatibility with HookAttachment.
+  mergedSystemMessage?: string;
+  mergedAdditionalContext?: string[];
 }
 
 export type HookAttachment =
   | HookSuccessAttachment
   | HookCancelledAttachment
   | HookSystemMessageAttachment
+  | HookBlockedPromptAttachment
   | HookAdditionalContextAttachment;
 
 export interface AttachmentEntry extends BaseEntry {

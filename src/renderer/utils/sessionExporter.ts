@@ -182,8 +182,19 @@ function formatChunkPlainText(chunk: Chunk): string[] {
         lines.push(`HOOK: ${attachment.hookName} (exit ${attachment.exitCode})`);
         if (attachment.stdout) lines.push(`  stdout: ${attachment.stdout}`);
         if (attachment.stderr) lines.push(`  stderr: ${attachment.stderr}`);
+        if (attachment.mergedSystemMessage) lines.push(`  ${attachment.mergedSystemMessage}`);
+        for (const ctx of attachment.mergedAdditionalContext ?? []) lines.push(`  ${ctx}`);
       } else if (attachment?.type === 'hook_cancelled') {
         lines.push(`HOOK: ${attachment.hookName} (cancelled)`);
+      } else if (attachment?.type === 'hook_system_message') {
+        lines.push(`HOOK: ${attachment.hookName}`);
+        lines.push(`  ${attachment.content}`);
+      } else if (attachment?.type === 'hook_additional_context') {
+        lines.push(`HOOK: ${attachment.hookName} (injected context)`);
+        for (const ctx of attachment.content) lines.push(`  ${ctx}`);
+      } else if (attachment?.type === 'hook_blocked_prompt') {
+        lines.push(`HOOK: ${attachment.hookName} (blocked)`);
+        lines.push(`  ${attachment.content}`);
       }
       break;
     }
@@ -306,9 +317,44 @@ function formatChunkMarkdown(chunk: Chunk, turnNum: number): string[] {
           lines.push(attachment.stderr);
           lines.push('```');
         }
+        if (attachment.mergedSystemMessage) {
+          lines.push('');
+          lines.push(attachment.mergedSystemMessage);
+        }
+        if (attachment.mergedAdditionalContext?.length) {
+          lines.push('');
+          lines.push('**Injected context:**');
+          for (const ctx of attachment.mergedAdditionalContext) {
+            lines.push('');
+            lines.push('```');
+            lines.push(ctx);
+            lines.push('```');
+          }
+        }
         lines.push('');
       } else if (attachment?.type === 'hook_cancelled') {
         lines.push(`*Hook cancelled: ${attachment.hookName}*`);
+        lines.push('');
+      } else if (attachment?.type === 'hook_system_message') {
+        lines.push(`### Hook: ${attachment.hookName} (Turn ${turnNum})`);
+        lines.push('');
+        lines.push(attachment.content);
+        lines.push('');
+      } else if (attachment?.type === 'hook_additional_context') {
+        lines.push(`### Hook: ${attachment.hookName} (Turn ${turnNum})`);
+        lines.push('');
+        lines.push('**Injected context:**');
+        lines.push('');
+        for (const ctx of attachment.content) {
+          lines.push('```');
+          lines.push(ctx);
+          lines.push('```');
+          lines.push('');
+        }
+      } else if (attachment?.type === 'hook_blocked_prompt') {
+        lines.push(`### Hook: ${attachment.hookName} (blocked, Turn ${turnNum})`);
+        lines.push('');
+        lines.push(attachment.content);
         lines.push('');
       }
       break;

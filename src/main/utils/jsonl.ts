@@ -38,6 +38,13 @@ const logger = createLogger('Util:jsonl');
 
 const defaultProvider = new LocalFileSystemProvider();
 
+const HOOK_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([
+  'hook_success',
+  'hook_cancelled',
+  'hook_system_message',
+  'hook_additional_context',
+]);
+
 // Re-export for backwards compatibility
 export { extractCwd, extractFirstUserMessagePreview } from './metadataExtraction';
 export { checkMessagesOngoing } from './sessionStateDetection';
@@ -79,7 +86,52 @@ export async function parseJsonlFile(
     }
   }
 
-  return messages;
+  return mergeChainedHookAttachments(messages);
+}
+
+/**
+ * Collapse a chain of hook attachment lines belonging to the same firing into a single
+ * ParsedMessage, so exactly one UI marker is rendered per hook execution.
+ *
+ * The CLI writes 1-3 attachment lines per hook firing (hook_success/hook_cancelled,
+ * optionally followed by a derived hook_system_message and/or hook_additional_context),
+ * each chained via parentUuid (a line's parentUuid is the previous line's uuid). This walks
+ * the message list once and, whenever a hook attachment's parentUuid points at the
+ * immediately preceding message and both share the same hookName/hookEvent, folds its
+ * content into the first line of the chain instead of keeping it as a separate message.
+ */
+function mergeChainedHookAttachments(messages: ParsedMessage[]): ParsedMessage[] {
+  const result: ParsedMessage[] = [];
+  let prevMessage: ParsedMessage | null = null;
+  let chainAnchor: ParsedMessage | null = null;
+
+  for (const msg of messages) {
+    const attachment = msg.type === 'attachment' ? msg.hookAttachment : undefined;
+    const anchorAttachment = chainAnchor?.hookAttachment;
+
+    if (
+      attachment &&
+      anchorAttachment &&
+      prevMessage !== null &&
+      msg.parentUuid === prevMessage.uuid &&
+      attachment.hookName === anchorAttachment.hookName &&
+      attachment.hookEvent === anchorAttachment.hookEvent
+    ) {
+      if (attachment.type === 'hook_system_message') {
+        anchorAttachment.mergedSystemMessage = attachment.content;
+      } else if (attachment.type === 'hook_additional_context') {
+        anchorAttachment.mergedAdditionalContext = attachment.content;
+      }
+      prevMessage = msg;
+      continue;
+    }
+
+    result.push(msg);
+    prevMessage = msg;
+    chainAnchor = attachment ? msg : null;
+  }
+
+  return result;
 }
 
 /**
@@ -100,6 +152,37 @@ export function parseJsonlLine(line: string): ParsedMessage | null {
 // =============================================================================
 
 /**
+ * A `type: "system", subtype: "informational"` entry's `content` is CLI-generated
+ * free text, not structured JSON - typically `"<HookEvent> operation blocked by
+ * hook:\n[<command>]: <reason>\n..."`. Pull out the event name and the offending
+ * command/script so the resulting marker can label itself the same way the
+ * `hook_*` attachment types do, falling back to generic labels when the text
+ * doesn't match that shape (other CLI versions may phrase this differently).
+ */
+function buildBlockedPromptAttachment(
+  content: string,
+  level: 'info' | 'warning' | 'error' | undefined,
+  preventContinuation: boolean
+): HookAttachment {
+  const eventMatch = /^(\S+) operation blocked by hook:/.exec(content);
+  const hookEvent = eventMatch?.[1] ?? 'UserPromptSubmit';
+
+  const bracketStart = content.indexOf('[');
+  const bracketEnd = bracketStart === -1 ? -1 : content.indexOf(']', bracketStart + 1);
+  const command = bracketEnd === -1 ? undefined : content.slice(bracketStart + 1, bracketEnd);
+  const hookName = command ? (command.split('/').pop() ?? hookEvent) : hookEvent;
+
+  return {
+    type: 'hook_blocked_prompt',
+    content,
+    hookName,
+    hookEvent,
+    level,
+    preventContinuation,
+  };
+}
+
+/**
  * Parse a single JSONL entry into a ParsedMessage.
  */
 function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
@@ -113,15 +196,12 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
     return null;
   }
 
-  // Hook attachments: only hook_success/hook_cancelled carry unique information.
-  // hook_system_message/hook_additional_context are pure derivatives of a preceding
-  // hook_success's stdout JSON (systemMessage / hookSpecificOutput.additionalContext),
-  // so they're dropped here to avoid duplicate display entries.
-  if (entry.type === 'attachment') {
-    const attachmentType = entry.attachment.type;
-    if (attachmentType !== 'hook_success' && attachmentType !== 'hook_cancelled') {
-      return null;
-    }
+  // Attachment entries also carry CLI-internal bookkeeping types unrelated to hooks
+  // (e.g. agent_listing_delta, skill_listing, total_tokens_reminder). Only the
+  // hook_* types are modeled/rendered - anything else is dropped rather than being
+  // misclassified as a hook (see isParsedHookMessage).
+  if (entry.type === 'attachment' && !HOOK_ATTACHMENT_TYPES.has(entry.attachment.type)) {
+    return null;
   }
 
   // Handle different entry types
@@ -180,6 +260,14 @@ function parseChatHistoryEntry(entry: ChatHistoryEntry): ParsedMessage | null {
       requestId = entry.requestId;
     } else if (entry.type === 'system') {
       isMeta = entry.isMeta ?? false;
+      if (entry.subtype === 'informational' && entry.content) {
+        content = entry.content;
+        hookAttachment = buildBlockedPromptAttachment(
+          entry.content,
+          entry.level,
+          entry.preventContinuation ?? false
+        );
+      }
     }
   }
 
